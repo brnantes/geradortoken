@@ -8,7 +8,9 @@ import random, string
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your_secret_key'  # Substitua por sua chave secreta
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///db.sqlite3'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False  # Desativando para evitar warnings
 db = SQLAlchemy(app)
+
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
@@ -16,9 +18,9 @@ login_manager.login_view = 'login'
 # Modelo de usuário
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(150), unique=True)
-    email = db.Column(db.String(150), unique=True)
-    password = db.Column(db.String(150))
+    username = db.Column(db.String(150), unique=True, nullable=False)
+    email = db.Column(db.String(150), unique=True, nullable=False)
+    password = db.Column(db.String(150), nullable=False)
     role = db.Column(db.String(50))  # Papéis: Admin, Gerente, Vendedor, Usuário comum
 
 # Modelo de token
@@ -26,15 +28,8 @@ class Token(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     action = db.Column(db.String(100))
     token = db.Column(db.String(100), unique=True)
-    expiration_date = db.Column(db.Date)
+    expiration_date = db.Column(db.Date, nullable=False)
     used = db.Column(db.Boolean, default=False)  # Indica se o token foi usado
-
-# Modelo de Key
-class Key(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), unique=True)  # Nome da Key
-    key_value = db.Column(db.String(100))  # Valor da Key
-    created_at = db.Column(db.DateTime, default=datetime.now)  # Data de criação da Key
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -87,27 +82,12 @@ def create_token():
     tokens = Token.query.all()
     return render_template('create_token.html', tokens=tokens)
 
-# Rota para criar keys
-@app.route('/create_key', methods=['GET', 'POST'])
-@login_required
-def create_key():
-    if request.method == 'POST':
-        name = request.form['name']
-        key_value = generate_key_value()  # Gera o valor da key aleatoriamente
-        new_key = Key(name=name, key_value=key_value)
-        db.session.add(new_key)
-        db.session.commit()
-        flash(f'Key {name} criada com sucesso!')
-        return redirect(url_for('create_key'))
-
-    # Obter todas as keys já criadas para exibição na página
-    keys = Key.query.all()
-    return render_template('create_key.html', keys=keys)
-
-def generate_key_value():
-    # Gerar valor aleatório para a key
-    random_string = ''.join(random.choices(string.ascii_letters + string.digits, k=16))  # 16 caracteres aleatórios
-    return random_string
+def generate_token(action):
+    # Gerar token no formato "nomedaação-caracteres-letrasenumeros"
+    short_action = action[:5]  # Pega os primeiros 5 caracteres do nome da ação
+    random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=9))  # 9 caracteres aleatórios
+    token = f"{short_action}-{random_string}"
+    return token[:15]  # Limitar o token a no máximo 15 caracteres
 
 @app.route('/validate_token', methods=['GET', 'POST'])
 @login_required
@@ -159,6 +139,39 @@ def manage_users():
     # Exibir lista de usuários
     users = User.query.all()
     return render_template('manage_users.html', users=users)
+
+@app.route('/edit_user/<int:user_id>', methods=['GET', 'POST'])
+@login_required
+def edit_user(user_id):
+    if current_user.role != 'Admin':
+        flash('Acesso negado!')
+        return redirect(url_for('dashboard'))
+    
+    user = User.query.get(user_id)
+    if request.method == 'POST':
+        user.username = request.form['username']
+        user.email = request.form['email']
+        user.role = request.form['role']
+        if request.form['password']:
+            user.password = generate_password_hash(request.form['password'], method='pbkdf2:sha256')
+        db.session.commit()
+        flash(f'Usuário {user.username} atualizado com sucesso!')
+        return redirect(url_for('manage_users'))
+
+    return render_template('edit_user.html', user=user)
+
+@app.route('/delete_user/<int:user_id>', methods=['POST'])
+@login_required
+def delete_user(user_id):
+    if current_user.role != 'Admin':
+        flash('Acesso negado!')
+        return redirect(url_for('dashboard'))
+
+    user = User.query.get(user_id)
+    db.session.delete(user)
+    db.session.commit()
+    flash(f'Usuário {user.username} excluído com sucesso!')
+    return redirect(url_for('manage_users'))
 
 # Função para criar um super admin
 def create_super_admin():
